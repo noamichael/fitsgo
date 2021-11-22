@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -223,7 +224,7 @@ func (f *File) parseData(fitsFile *os.File, totalData int64) {
 	f.imageData = NewData(width, height, bitpix, bzero, bscale)
 
 	// BITPIX to pixel
-	pixelDataSize := bitpix / 8
+	pixelDataSize := int(math.Abs(float64(bitpix)) / 8)
 	// Figure out how many pixels are in a block
 	pixelDataPerBlock := FITS_BLOCK_SIZE / pixelDataSize
 
