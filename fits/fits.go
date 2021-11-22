@@ -1,8 +1,11 @@
-package main
+package fits
 
 import (
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"log"
 	"os"
 	"strconv"
@@ -22,13 +25,14 @@ type HeaderDataUnit struct {
 	Comment string
 }
 
-type Fits struct {
+type File struct {
 	HeaderDataUnits map[string]*HeaderDataUnit
 	headersRaw      string
 	readOffset      int64
+	imageData       Data
 }
 
-func (f *Fits) NaxisHeader(index int) (int, error) {
+func (f *File) NaxisHeader(index int) (int, error) {
 	naxisHeaderKey := "NAXIS"
 
 	if index > 0 {
@@ -38,7 +42,7 @@ func (f *Fits) NaxisHeader(index int) (int, error) {
 	return f.HeaderInt(naxisHeaderKey)
 }
 
-func (f *Fits) HeaderInt(name string) (int, error) {
+func (f *File) HeaderInt(name string) (int, error) {
 
 	header, headHeader := f.HeaderDataUnits[name]
 
@@ -55,11 +59,28 @@ func (f *Fits) HeaderInt(name string) (int, error) {
 	return int(headerValue), nil
 }
 
-func (f *Fits) HeadersString() string {
+func (f *File) HeaderFloat(name string) (float32, error) {
+
+	header, headHeader := f.HeaderDataUnits[name]
+
+	if !headHeader {
+		return 0, errors.New("could not find " + name)
+	}
+
+	headerValue, err := strconv.ParseFloat(header.Value, 32)
+
+	if err != nil {
+		return 0, fmt.Errorf("could not parse NAXIS header, %e", err)
+	}
+
+	return float32(headerValue), nil
+}
+
+func (f *File) HeadersString() string {
 	return f.headersRaw
 }
 
-func Parse(filename string) *Fits {
+func Parse(filename string) *File {
 	fitsFile, err := os.Open(filename)
 
 	if err != nil {
@@ -74,7 +95,7 @@ func Parse(filename string) *Fits {
 	fmt.Printf("File Size: %d Bytes\n", fileSize)
 
 	// Step 1: parse headers
-	fits := &Fits{
+	fits := &File{
 		HeaderDataUnits: make(map[string]*HeaderDataUnit),
 	}
 
@@ -125,7 +146,7 @@ func Parse(filename string) *Fits {
 // Sect. 4.4.1), which marks the logical end of the header. Keyword
 // records without information (e.g., following the END keyword)
 // shall be filled with ASCII spaces (decimal 32 or hexadecimal20).
-func (f *Fits) parseAndAddHeader(raw string) *HeaderDataUnit {
+func (f *File) parseAndAddHeader(raw string) *HeaderDataUnit {
 
 	equalsIndex := strings.Index(raw, "=")
 	keyRaw := ""
@@ -171,7 +192,7 @@ func (f *Fits) parseAndAddHeader(raw string) *HeaderDataUnit {
 
 }
 
-func (f *Fits) parseData(fitsFile *os.File, totalData int64) {
+func (f *File) parseData(fitsFile *os.File, totalData int64) {
 	// The number of dimensions for the table data
 	// Spec: The primary data array, if present, shall consist of a single data
 	// array with from 1 to 999 dimensions
@@ -189,33 +210,25 @@ func (f *Fits) parseData(fitsFile *os.File, totalData int64) {
 
 	// The dimensions for each array TODO: Flip to Big Endian
 	// The is usually of size 2. Example: [400, 200,] for a 400x200 image
-	naxes := make([]int, naxis)
-
 	width, _ := f.NaxisHeader(1)
 	height, _ := f.NaxisHeader(2)
+	bitpix, _ := f.HeaderInt("BITPIX")
+	bzero, _ := f.HeaderFloat("BZERO")
+	bscale, _ := f.HeaderFloat("BSCALE")
 
-	imageData := make([][][]byte, height)
-
-	for i := 0; i < height; i++ {
-		imageData[i] = make([][]byte, width)
+	if bscale <= 0 {
+		bscale = 1
 	}
 
-	bitpix, err := f.HeaderInt("BITPIX")
-
-	if err != nil {
-		log.Fatalf("%e", err)
-	}
+	f.imageData = NewData(width, height, bitpix, bzero, bscale)
 
 	// BITPIX to pixel
 	pixelDataSize := bitpix / 8
 	// Figure out how many pixels are in a block
 	pixelDataPerBlock := FITS_BLOCK_SIZE / pixelDataSize
 
-	// bzero, _ := f.HeaderInt("BZERO")
-	// bzero, _ := f.HeaderInt("BSCALE")
-
 	fmt.Printf("pixelDataSize = %d, pixelDataPerBlock=%d\n", pixelDataSize, pixelDataPerBlock)
-	fmt.Printf("naxis = %d, naxes = %d, bitpix = %d\n", naxis, len(naxes), bitpix)
+	fmt.Printf("naxis = %d bitpix = %d\n", naxis, bitpix)
 	fmt.Printf("Total file size = %d, read offset = %d", totalData, f.readOffset)
 
 	row := 0
@@ -236,21 +249,20 @@ func (f *Fits) parseData(fitsFile *os.File, totalData int64) {
 		}
 
 		// Translate Big endian to little endian
-
-		//for i := 0; i < FITS_BLOCK_SIZE; i++ {
 		for pixel := 0; pixel < FITS_BLOCK_SIZE; pixel += pixelDataSize {
 			pixelData := dataBlock[pixel:(pixel + pixelDataSize)]
-			//pixelData := []byte{dataBlock[i]}
-			imageData[row][col] = pixelData
-			row++
-			if row >= height {
-				row = 0
-				col++
 
-				if col >= width {
+			f.imageData.Write(row, col, pixelData)
+
+			col++
+			if col >= width {
+				col = 0
+				row++
+				if row >= height {
 					break
 				}
 			}
+
 		}
 
 	}
@@ -259,15 +271,22 @@ func (f *Fits) parseData(fitsFile *os.File, totalData int64) {
 
 }
 
-// for pixel := 0; pixel < pixelDataPerBlock; pixel += pixelDataSize {
+func (f *File) SaveAsJpeg() {
+	out, _ := os.Create("./samples/test.jpg")
 
-// 	pixel := dataBlock[pixel:(pixel + pixelDataSize)]
+	width, _ := f.NaxisHeader(1)
+	height, _ := f.NaxisHeader(2)
 
-// 	imageData[row][col] = pixel
+	rectangle := image.Rect(0, 0, width, height)
 
-// 	row++
-// 	if row >= height {
-// 		row = 0
-// 		col++
-// 	}
-// }
+	img := image.NewGray(rectangle)
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			pixelValue := f.imageData.ReadAsInt(y, x)
+			img.Set(x, y, color.Gray16{Y: uint16(pixelValue * 20)})
+		}
+	}
+
+	jpeg.Encode(out, img, &jpeg.Options{Quality: 100})
+}
