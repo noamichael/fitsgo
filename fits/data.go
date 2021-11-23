@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"log"
+	"math"
 )
 
 func NewData(width, height, bitpix int, bzero, bscale float32) Data {
@@ -169,9 +170,9 @@ func (d *Float32Data) ReadAsInt(row, col int) int {
 }
 
 func (d *Float32Data) Write(row, col int, b []byte) {
-	var p float32
-	readAs(b, &p)
-	d.data[row][col] = (p + d.bzero) * d.bscale
+	bits := binary.BigEndian.Uint32(b)
+	float := math.Float32frombits(bits)
+	d.data[row][col] = (float + d.bzero) * d.bscale
 }
 
 type Float64Data struct {

@@ -5,6 +5,6 @@ import (
 )
 
 func main() {
-	fits := fits.Parse("samples/Single__2021-11-12_23-03-07_Bin1x1_130s__-15C.fit")
+	fits := fits.Parse("samples/color.fit")
 	fits.SaveAsJpeg()
 }

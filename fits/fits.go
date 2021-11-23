@@ -155,7 +155,7 @@ func (f *File) parseAndAddHeader(raw string) *HeaderDataUnit {
 
 	// Has equals sign
 	if equalsIndex > -1 {
-		keyRaw = raw[0 : equalsIndex-1]
+		keyRaw = raw[0:equalsIndex]
 		valueAndComment = raw[equalsIndex+1:]
 	} else {
 		if strings.HasPrefix(raw, "END") {
@@ -266,6 +266,10 @@ func (f *File) parseData(fitsFile *os.File, totalData int64) {
 
 		}
 
+		if col >= width || row >= height {
+			break
+		}
+
 	}
 
 	fmt.Println("Done reading!")
@@ -277,16 +281,25 @@ func (f *File) SaveAsJpeg() {
 
 	width, _ := f.NaxisHeader(1)
 	height, _ := f.NaxisHeader(2)
+	bayerPatternHeader, colorImage := f.HeaderDataUnits["BAYERPAT"]
 
 	rectangle := image.Rect(0, 0, width, height)
 
-	img := image.NewGray(rectangle)
+	var img image.Image
 
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			pixelValue := f.imageData.ReadAsInt(y, x)
-			img.Set(x, y, color.Gray16{Y: uint16(pixelValue * 20)})
-		}
+	if !colorImage {
+		grayImg := image.NewGray(rectangle)
+		f.forEachGrayScale(func(x, y int, value uint16) {
+			grayImg.Set(x, y, color.Gray16{Y: value * 20})
+		})
+		img = grayImg
+	} else {
+		bayerPattern := parseBayer(bayerPatternHeader.Value)
+		colorScaleImg := image.NewRGBA(rectangle)
+		f.debayer(bayerPattern, func(x, y int, r, g, b uint8) {
+			colorScaleImg.Set(x, y, color.RGBA{R: r, G: g, B: b, A: 255})
+		})
+		img = colorScaleImg
 	}
 
 	jpeg.Encode(out, img, &jpeg.Options{Quality: 100})
