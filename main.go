@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	fits := fits.Parse("samples/color.fits")
+	fits := fits.Parse("samples/gray.fits")
 	fmt.Println(fits.HeadersRaw())
-	fits.SaveAsJpeg()
+	fits.HeaderDataUnits[0].SaveAsJpeg()
 }

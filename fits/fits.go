@@ -20,20 +20,33 @@ import (
 // FITS blocks, which are each 2880 bytes (23040 bits) in length.
 var FITS_BLOCK_SIZE = 2880
 
-type HeaderDataUnit struct {
+type Header struct {
 	Keyword string
 	Value   string
 	Comment string
 }
 
-type File struct {
-	HeaderDataUnits map[string]*HeaderDataUnit
-	headersRaw      string
-	readOffset      int64
-	imageData       Data
+type HeaderDataUnit struct {
+	Headers map[string]*Header
+	Data    Data
+	start   int64
+	end     int64
+	blocks  int64
 }
 
-func (f *File) NaxisHeader(index int) (int, error) {
+type File struct {
+	HeaderDataUnits []*HeaderDataUnit
+	headersRaw      string
+	readOffset      int64
+	fileSize        int64
+	fs              *os.File
+}
+
+func (f *File) hasMoreData() bool {
+	return f.fileSize-f.readOffset > 0
+}
+
+func (f *HeaderDataUnit) NaxisHeader(index int) (int, error) {
 	naxisHeaderKey := "NAXIS"
 
 	if index > 0 {
@@ -43,9 +56,9 @@ func (f *File) NaxisHeader(index int) (int, error) {
 	return f.HeaderInt(naxisHeaderKey)
 }
 
-func (f *File) HeaderInt(name string) (int, error) {
+func (f *HeaderDataUnit) HeaderInt(name string) (int, error) {
 
-	header, headHeader := f.HeaderDataUnits[name]
+	header, headHeader := f.Headers[name]
 
 	if !headHeader {
 		return 0, errors.New("could not find " + name)
@@ -60,9 +73,9 @@ func (f *File) HeaderInt(name string) (int, error) {
 	return int(headerValue), nil
 }
 
-func (f *File) HeaderFloat(name string) (float32, error) {
+func (f *HeaderDataUnit) HeaderFloat(name string) (float32, error) {
 
-	header, headHeader := f.HeaderDataUnits[name]
+	header, headHeader := f.Headers[name]
 
 	if !headHeader {
 		return 0, errors.New("could not find " + name)
@@ -97,15 +110,37 @@ func Parse(filename string) *File {
 
 	// Step 1: parse headers
 	fits := &File{
-		HeaderDataUnits: make(map[string]*HeaderDataUnit),
+		HeaderDataUnits: make([]*HeaderDataUnit, 0),
+		fs:              fitsFile,
+		fileSize:        fileSize,
+	}
+
+	headerDataUnit := fits.parseHeaders()
+	headerDataUnit.start = fits.readOffset
+	headerDataUnit.end = fits.readOffset + headerDataUnit.calculateEnd()
+	hduSize := float64(headerDataUnit.end - headerDataUnit.start)
+	headerDataUnit.blocks = int64(math.Ceil(hduSize / float64(FITS_BLOCK_SIZE)))
+	fmt.Printf("HDU Start: %d, HDU End: %d\n", headerDataUnit.start, headerDataUnit.end)
+
+	if fits.hasMoreData() {
+		fits.parseData(headerDataUnit)
+	}
+
+	return fits
+}
+
+func (f *File) parseHeaders() *HeaderDataUnit {
+
+	headerDataUnit := &HeaderDataUnit{
+		Headers: make(map[string]*Header),
 	}
 
 	parsingHeaders := true
 
 	for parsingHeaders {
 		buffer := make([]byte, FITS_BLOCK_SIZE)
-		read, err := fitsFile.ReadAt(buffer, fits.readOffset)
-		fits.readOffset += int64(read)
+		read, err := f.fs.ReadAt(buffer, f.readOffset)
+		f.readOffset += int64(read)
 
 		if err != nil {
 			log.Fatal(err)
@@ -115,8 +150,8 @@ func Parse(filename string) *File {
 		for _, b := range buffer {
 			currentHeader += string(b)
 			if len(currentHeader) >= 80 {
-				fits.headersRaw += currentHeader + "\n"
-				header := fits.parseAndAddHeader(currentHeader)
+				f.headersRaw += currentHeader + "\n"
+				header := f.parseAndAddHeader(currentHeader, headerDataUnit.Headers)
 				if header.Keyword == "END" {
 					parsingHeaders = false
 					break
@@ -127,16 +162,16 @@ func Parse(filename string) *File {
 
 		// TODO: handle case where we've hit the end of the file
 		// but we haven't found the end of the headers yet
-		if fits.readOffset >= fileSize {
+		if f.readOffset >= f.fileSize {
 			break
 		}
 	}
 
-	fmt.Printf("Read Offset: %d Bytes\n", fits.readOffset)
+	fmt.Printf("Read Offset: %d Bytes\n", f.readOffset)
 
-	fits.parseData(fitsFile, fileSize)
+	f.HeaderDataUnits = append(f.HeaderDataUnits, headerDataUnit)
 
-	return fits
+	return headerDataUnit
 }
 
 // Parses and adds a header record
@@ -147,7 +182,7 @@ func Parse(filename string) *File {
 // Sect. 4.4.1), which marks the logical end of the header. Keyword
 // records without information (e.g., following the END keyword)
 // shall be filled with ASCII spaces (decimal 32 or hexadecimal20).
-func (f *File) parseAndAddHeader(raw string) *HeaderDataUnit {
+func (f *File) parseAndAddHeader(raw string, headers map[string]*Header) *Header {
 
 	equalsIndex := strings.Index(raw, "=")
 	keyRaw := ""
@@ -159,12 +194,12 @@ func (f *File) parseAndAddHeader(raw string) *HeaderDataUnit {
 		valueAndComment = raw[equalsIndex+1:]
 	} else {
 		if strings.HasPrefix(raw, "END") {
-			return &HeaderDataUnit{Keyword: "END"}
+			return &Header{Keyword: "END"}
 		}
 		// This means the header span multiple lines
 		// Spec: 4.2.1.2 Continued string (long-string) keywords
 		// TODO: Support
-		return &HeaderDataUnit{}
+		return &Header{}
 	}
 
 	// parse value
@@ -181,13 +216,13 @@ func (f *File) parseAndAddHeader(raw string) *HeaderDataUnit {
 		comment = valueAndCommentParts[1]
 	}
 
-	header := &HeaderDataUnit{
+	header := &Header{
 		Keyword: strings.TrimSpace(keyRaw),
 		Value:   strings.TrimSpace(value),
 		Comment: strings.TrimSpace(comment),
 	}
 
-	f.HeaderDataUnits[header.Keyword] = header
+	headers[header.Keyword] = header
 
 	return header
 
@@ -197,12 +232,12 @@ func (f *File) HeadersRaw() string {
 	return f.headersRaw
 }
 
-func (f *File) parseData(fitsFile *os.File, totalData int64) {
+func (f *File) parseData(hdu *HeaderDataUnit) {
 	// The number of dimensions for the table data
 	// Spec: The primary data array, if present, shall consist of a single data
 	// array with from 1 to 999 dimensions
 	// (as specified by the NAXI keyword defined in Sect. 4.4.1).
-	naxis, err := f.NaxisHeader(0)
+	naxis, err := hdu.NaxisHeader(0)
 
 	if err != nil {
 		return
@@ -215,17 +250,17 @@ func (f *File) parseData(fitsFile *os.File, totalData int64) {
 
 	// The dimensions for each array TODO: Flip to Big Endian
 	// The is usually of size 2. Example: [400, 200,] for a 400x200 image
-	width, _ := f.NaxisHeader(1)
-	height, _ := f.NaxisHeader(2)
-	bitpix, _ := f.HeaderInt("BITPIX")
-	bzero, _ := f.HeaderFloat("BZERO")
-	bscale, _ := f.HeaderFloat("BSCALE")
+	width, _ := hdu.NaxisHeader(1)
+	height, _ := hdu.NaxisHeader(2)
+	bitpix, _ := hdu.HeaderInt("BITPIX")
+	bzero, _ := hdu.HeaderFloat("BZERO")
+	bscale, _ := hdu.HeaderFloat("BSCALE")
 
 	if bscale <= 0 {
 		bscale = 1
 	}
 
-	f.imageData = NewData(width, height, bitpix, bzero, bscale)
+	hdu.Data = NewData(width, height, bitpix, bzero, bscale)
 
 	// BITPIX to pixel
 	pixelDataSize := int(math.Abs(float64(bitpix)) / 8)
@@ -234,14 +269,14 @@ func (f *File) parseData(fitsFile *os.File, totalData int64) {
 
 	fmt.Printf("pixelDataSize = %d, pixelDataPerBlock=%d\n", pixelDataSize, pixelDataPerBlock)
 	fmt.Printf("naxis = %d bitpix = %d\n", naxis, bitpix)
-	fmt.Printf("Total file size = %d, read offset = %d", totalData, f.readOffset)
+	fmt.Printf("Total file size = %d, read offset = %d\n", f.fileSize, f.readOffset)
 
 	row := 0
 	col := 0
 
 	for {
 		dataBlock := make([]byte, FITS_BLOCK_SIZE)
-		read, _ := fitsFile.ReadAt(dataBlock, f.readOffset)
+		read, _ := f.fs.ReadAt(dataBlock, f.readOffset)
 		f.readOffset += int64(read)
 
 		// Stop looping if we've hit EOF
@@ -257,7 +292,7 @@ func (f *File) parseData(fitsFile *os.File, totalData int64) {
 		for pixel := 0; pixel < FITS_BLOCK_SIZE; pixel += pixelDataSize {
 			pixelData := dataBlock[pixel:(pixel + pixelDataSize)]
 
-			f.imageData.Write(row, col, pixelData)
+			hdu.Data.Write(row, col, pixelData)
 
 			col++
 			if col >= width {
@@ -280,12 +315,13 @@ func (f *File) parseData(fitsFile *os.File, totalData int64) {
 
 }
 
-func (f *File) SaveAsJpeg() {
+func (hdu *HeaderDataUnit) SaveAsJpeg() {
+
 	out, _ := os.Create("./samples/test.jpg")
 
-	width, _ := f.NaxisHeader(1)
-	height, _ := f.NaxisHeader(2)
-	bayerPatternHeader, colorImage := f.HeaderDataUnits["BAYERPAT"]
+	width, _ := hdu.NaxisHeader(1)
+	height, _ := hdu.NaxisHeader(2)
+	bayerPatternHeader, colorImage := hdu.Headers["BAYERPAT"]
 
 	rectangle := image.Rect(0, 0, width, height)
 
@@ -293,18 +329,28 @@ func (f *File) SaveAsJpeg() {
 
 	if !colorImage {
 		grayImg := image.NewGray(rectangle)
-		f.forEachGrayScale(func(x, y int, value uint16) {
+		hdu.forEachGrayScale(func(x, y int, value uint16) {
 			grayImg.Set(x, y, color.Gray16{Y: value * 20})
 		})
 		img = grayImg
 	} else {
 		bayerPattern := parseBayer(bayerPatternHeader.Value)
 		colorScaleImg := image.NewRGBA(rectangle)
-		f.debayer(bayerPattern, func(x, y int, r, g, b uint8) {
+		hdu.debayer(bayerPattern, func(x, y int, r, g, b uint8) {
 			colorScaleImg.Set(x, y, color.RGBA{R: r, G: g, B: b, A: 255})
 		})
 		img = colorScaleImg
 	}
 
 	jpeg.Encode(out, img, &jpeg.Options{Quality: 100})
+}
+
+func (hdu *HeaderDataUnit) calculateEnd() int64 {
+
+	width, _ := hdu.NaxisHeader(1)
+	height, _ := hdu.NaxisHeader(2)
+	bitpix, _ := hdu.HeaderInt("BITPIX")
+	bytesPerPixel := int64(math.Abs(float64(bitpix)) / 8)
+
+	return int64(height) * int64(width) * bytesPerPixel
 }

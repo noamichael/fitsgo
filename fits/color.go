@@ -9,9 +9,9 @@ import (
 type rgbConsumer func(row, col int, r, g, b uint8)
 type grayScaleConsumer func(row, col int, value uint16)
 
-func (f *File) debayer(bayerPattern string, consumer rgbConsumer) bool {
-	width, _ := f.NaxisHeader(1)
-	height, _ := f.NaxisHeader(2)
+func (hdu *HeaderDataUnit) debayer(bayerPattern string, consumer rgbConsumer) bool {
+	width, _ := hdu.NaxisHeader(1)
+	height, _ := hdu.NaxisHeader(2)
 
 	if bayerPattern != "RGGB" {
 		log.Fatalf("unsupported Bayer Pattern: %s\n", bayerPattern)
@@ -34,7 +34,7 @@ func (f *File) debayer(bayerPattern string, consumer rgbConsumer) bool {
 				color = string(rowOdd[col%2])
 			}
 
-			pix := &pixel{row: row, col: col, height: height, width: width, f: f}
+			pix := &pixel{row: row, col: col, height: height, width: width, hdu: hdu}
 
 			corners := []int{
 				pix.getTopLeft(),
@@ -100,13 +100,13 @@ func (f *File) debayer(bayerPattern string, consumer rgbConsumer) bool {
 	return true
 }
 
-func (f *File) forEachGrayScale(consumer grayScaleConsumer) bool {
+func (f *HeaderDataUnit) forEachGrayScale(consumer grayScaleConsumer) bool {
 	width, _ := f.NaxisHeader(1)
 	height, _ := f.NaxisHeader(2)
 
 	for y := 0; y < height; y++ {
 		for x := 0; x < width; x++ {
-			pixelValue := f.imageData.ReadAsInt(y, x)
+			pixelValue := f.Data.ReadAsInt(y, x)
 			consumer(x, y, uint16(pixelValue))
 		}
 	}
@@ -120,20 +120,20 @@ func parseBayer(bayer string) string {
 
 type pixel struct {
 	row, col, height, width int
-	f                       *File
+	hdu                     *HeaderDataUnit
 }
 
 // ensures the pixel at row, col are inbetween [0, 255]
 func (p *pixel) getAtScaled(row, col int) int {
 	// r = current range min/max
 	rmin := float64(0)
-	rmax := float64(p.f.imageData.GetMaxValue())
+	rmax := float64(p.hdu.Data.GetMaxValue())
 	// t = target range min/max
 	tmin := float64(0)
 	tmax := float64(255)
 	// TODO Find out why these are negative
 	//value := math.Abs(float64((p.f.imageData.ReadAsInt(row, col))))
-	value := float64(p.f.imageData.ReadAsInt(row, col))
+	value := float64(p.hdu.Data.ReadAsInt(row, col))
 	// force negative values to be max brightness
 	if value < 0 {
 		value = rmax
