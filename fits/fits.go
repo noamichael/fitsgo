@@ -27,11 +27,15 @@ type Header struct {
 }
 
 type HeaderDataUnit struct {
-	Headers map[string]*Header
-	Data    Data
-	start   int64
-	end     int64
-	blocks  int64
+	Headers     map[string]*Header
+	fits        *File
+	Data        Data
+	headerStart int64
+	headerEnd   int64
+	dataStart   int64
+	dataEnd     int64
+	blocks      int64
+	read        bool
 }
 
 type File struct {
@@ -39,7 +43,7 @@ type File struct {
 	headersRaw      string
 	readOffset      int64
 	fileSize        int64
-	fs              *os.File
+	filename        string
 }
 
 func (f *File) hasMoreData() bool {
@@ -111,35 +115,43 @@ func Parse(filename string) *File {
 	// Step 1: parse headers
 	fits := &File{
 		HeaderDataUnits: make([]*HeaderDataUnit, 0),
-		fs:              fitsFile,
 		fileSize:        fileSize,
+		filename:        filename,
 	}
 
-	headerDataUnit := fits.parseHeaders()
-	headerDataUnit.start = fits.readOffset
-	headerDataUnit.end = fits.readOffset + headerDataUnit.calculateEnd()
-	hduSize := float64(headerDataUnit.end - headerDataUnit.start)
-	headerDataUnit.blocks = int64(math.Ceil(hduSize / float64(FITS_BLOCK_SIZE)))
-	fmt.Printf("HDU Start: %d, HDU End: %d\n", headerDataUnit.start, headerDataUnit.end)
+	for {
+		headerDataUnit := fits.parseHeaders(fitsFile)
+		headerDataUnit.dataStart = fits.readOffset
+		headerDataUnit.dataEnd = fits.readOffset + headerDataUnit.calculateEnd()
+		hduSize := float64(headerDataUnit.dataEnd - headerDataUnit.dataStart)
+		headerDataUnit.blocks = int64(math.Ceil(hduSize / float64(FITS_BLOCK_SIZE)))
+		fmt.Printf("HDU Start: %d, HDU End: %d\n", headerDataUnit.dataStart, headerDataUnit.dataEnd)
 
-	if fits.hasMoreData() {
-		fits.parseData(headerDataUnit)
+		nextHeaderStart := fits.readOffset + headerDataUnit.blocks*int64(FITS_BLOCK_SIZE)
+
+		if fits.readOffset+headerDataUnit.blocks*int64(FITS_BLOCK_SIZE) >= fits.fileSize {
+			break
+		}
+
+		fits.readOffset = nextHeaderStart
 	}
 
 	return fits
 }
 
-func (f *File) parseHeaders() *HeaderDataUnit {
+func (f *File) parseHeaders(fs *os.File) *HeaderDataUnit {
 
 	headerDataUnit := &HeaderDataUnit{
-		Headers: make(map[string]*Header),
+		Headers:     make(map[string]*Header),
+		headerStart: f.readOffset,
+		fits:        f,
 	}
 
 	parsingHeaders := true
 
 	for parsingHeaders {
 		buffer := make([]byte, FITS_BLOCK_SIZE)
-		read, err := f.fs.ReadAt(buffer, f.readOffset)
+		read, err := fs.ReadAt(buffer, f.readOffset)
 		f.readOffset += int64(read)
 
 		if err != nil {
@@ -170,6 +182,7 @@ func (f *File) parseHeaders() *HeaderDataUnit {
 	fmt.Printf("Read Offset: %d Bytes\n", f.readOffset)
 
 	f.HeaderDataUnits = append(f.HeaderDataUnits, headerDataUnit)
+	headerDataUnit.headerEnd = f.readOffset
 
 	return headerDataUnit
 }
@@ -232,7 +245,16 @@ func (f *File) HeadersRaw() string {
 	return f.headersRaw
 }
 
-func (f *File) parseData(hdu *HeaderDataUnit) {
+func (hdu *HeaderDataUnit) parseData() {
+	fs, err := os.Open(hdu.fits.filename)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	defer fs.Close()
+
+	hdu.fits.readOffset = hdu.dataStart
 	// The number of dimensions for the table data
 	// Spec: The primary data array, if present, shall consist of a single data
 	// array with from 1 to 999 dimensions
@@ -269,15 +291,15 @@ func (f *File) parseData(hdu *HeaderDataUnit) {
 
 	fmt.Printf("pixelDataSize = %d, pixelDataPerBlock=%d\n", pixelDataSize, pixelDataPerBlock)
 	fmt.Printf("naxis = %d bitpix = %d\n", naxis, bitpix)
-	fmt.Printf("Total file size = %d, read offset = %d\n", f.fileSize, f.readOffset)
+	fmt.Printf("Total file size = %d, read offset = %d\n", hdu.fits.fileSize, hdu.fits.readOffset)
 
 	row := 0
 	col := 0
 
 	for {
 		dataBlock := make([]byte, FITS_BLOCK_SIZE)
-		read, _ := f.fs.ReadAt(dataBlock, f.readOffset)
-		f.readOffset += int64(read)
+		read, _ := fs.ReadAt(dataBlock, hdu.fits.readOffset)
+		hdu.fits.readOffset += int64(read)
 
 		// Stop looping if we've hit EOF
 		if read < 1 {
@@ -311,11 +333,17 @@ func (f *File) parseData(hdu *HeaderDataUnit) {
 
 	}
 
+	hdu.read = true
+
 	fmt.Println("Done reading!")
 
 }
 
 func (hdu *HeaderDataUnit) SaveAsJpeg() {
+
+	if !hdu.read {
+		hdu.parseData()
+	}
 
 	out, _ := os.Create("./samples/test.jpg")
 
