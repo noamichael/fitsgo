@@ -92,6 +92,7 @@ func NewData(width, height, bitpix int, bzero, bscale float32) Data {
 type Data interface {
 	Write(row, col int, b []byte)
 	ReadAsInt(row, col int) int
+	GetMaxValue() float64
 }
 
 type Int8Data struct {
@@ -110,6 +111,10 @@ func (d *Int8Data) Write(row, col int, b []byte) {
 	d.data[row][col] = (p + int8(d.bzero)) * int8(d.bscale)
 }
 
+func (d *Int8Data) GetMaxValue() float64 {
+	return float64(math.MaxInt8)
+}
+
 type Int16Data struct {
 	data   [][]int16
 	bzero  float32
@@ -124,6 +129,10 @@ func (d *Int16Data) Write(row, col int, b []byte) {
 	var p int16
 	readAs(b, &p)
 	d.data[row][col] = (p + int16(d.bzero)) * int16(d.bscale)
+}
+
+func (d *Int16Data) GetMaxValue() float64 {
+	return float64(math.MaxInt16)
 }
 
 type Int32Data struct {
@@ -142,6 +151,10 @@ func (d *Int32Data) Write(row, col int, b []byte) {
 	d.data[row][col] = (p + int32(d.bzero)) * int32(d.bscale)
 }
 
+func (d *Int32Data) GetMaxValue() float64 {
+	return float64(math.MaxInt32)
+}
+
 type Int64Data struct {
 	data   [][]int64
 	bzero  float32
@@ -156,6 +169,10 @@ func (d *Int64Data) Write(row, col int, b []byte) {
 	var p int64
 	readAs(b, &p)
 	d.data[row][col] = (p + int64(d.bzero)) * int64(d.bscale)
+}
+
+func (d *Int64Data) GetMaxValue() float64 {
+	return float64(math.MaxInt64)
 }
 
 type Float32Data struct {
@@ -174,6 +191,10 @@ func (d *Float32Data) Write(row, col int, b []byte) {
 	d.data[row][col] = (float + d.bzero) * d.bscale
 }
 
+func (d *Float32Data) GetMaxValue() float64 {
+	return float64(math.MaxFloat32)
+}
+
 type Float64Data struct {
 	data   [][]float64
 	bzero  float32
@@ -188,6 +209,10 @@ func (d *Float64Data) Write(row, col int, b []byte) {
 	var p float64
 	readAs(b, &p)
 	d.data[row][col] = (p + float64(d.bzero)) * float64(d.bscale)
+}
+
+func (d *Float64Data) GetMaxValue() float64 {
+	return float64(math.MaxFloat64)
 }
 
 func readAs(data []byte, pnter interface{}) {
