@@ -3,7 +3,6 @@ package fits
 import (
 	"fmt"
 	"log"
-	"math"
 	"strings"
 )
 
@@ -21,7 +20,7 @@ func (f *File) debayer(bayerPattern string, consumer rgbConsumer) bool {
 	rowEven := bayerPattern[0:2]
 	rowOdd := bayerPattern[2:4]
 
-	fmt.Println(rowOdd, rowEven)
+	fmt.Println(rowEven, rowOdd)
 
 	// Do some bilinear interpolation
 	for row := 0; row < height; row++ {
@@ -133,7 +132,12 @@ func (p *pixel) getAtScaled(row, col int) int {
 	tmin := float64(0)
 	tmax := float64(255)
 	// TODO Find out why these are negative
-	value := math.Abs(float64((p.f.imageData.ReadAsInt(row, col))))
+	//value := math.Abs(float64((p.f.imageData.ReadAsInt(row, col))))
+	value := float64(p.f.imageData.ReadAsInt(row, col))
+	// force negative values to be max brightness
+	if value < 0 {
+		value = rmax
+	}
 	// https://stats.stackexchange.com/questions/281162/scale-a-number-between-a-range
 	scaled := (((value-rmin)/(rmax-rmin))*(tmax-tmin) + tmin)
 	return int(scaled)
