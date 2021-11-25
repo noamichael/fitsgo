@@ -92,7 +92,6 @@ func NewData(width, height, bitpix int, bzero, bscale float32) Data {
 type Data interface {
 	Write(row, col int, b []byte)
 	ReadAsInt(row, col int) int
-	//ReadAsFloat(row, col int) float32
 }
 
 type Int8Data struct {

@@ -3,6 +3,7 @@ package fits
 import (
 	"fmt"
 	"log"
+	"math"
 	"strings"
 )
 
@@ -20,13 +21,16 @@ func (f *File) debayer(bayerPattern string, consumer rgbConsumer) bool {
 	rowEven := bayerPattern[0:2]
 	rowOdd := bayerPattern[2:4]
 
+	rmin := float64(0)
+	rmax := float64(math.MaxInt16)
+	tmin := float64(0)
+	tmax := float64(255)
+
 	getAtScaled := func(x, y int) int {
-		value := f.imageData.ReadAsInt(x, y)
-		// scaled := value / 256
-		// if scaled > 255 {
-		// 	scaled = 255
-		// }
-		return value
+		value := float64(f.imageData.ReadAsInt(x, y))
+		// https://stats.stackexchange.com/questions/281162/scale-a-number-between-a-range
+		scaled := (((value-rmin)/(rmax-rmin))*(tmax-tmin) + tmin)
+		return int(scaled)
 	}
 
 	fmt.Println(rowOdd, rowEven)

@@ -193,6 +193,10 @@ func (f *File) parseAndAddHeader(raw string) *HeaderDataUnit {
 
 }
 
+func (f *File) HeadersRaw() string {
+	return f.headersRaw
+}
+
 func (f *File) parseData(fitsFile *os.File, totalData int64) {
 	// The number of dimensions for the table data
 	// Spec: The primary data array, if present, shall consist of a single data
